@@ -56,6 +56,7 @@ iOS 上 Chrome/Firefox 不支持扩展；Safari 的 WebExtension 必须走 App S
 - `chatgpt-jump.user.js` 是全部逻辑所在。运行时自检 `chrome.runtime.id`：存在 = 扩展模式（命令走消息通道 + manifest 注入 CSS）；不存在 = userscript 模式（keydown 兜底 + `GM_addStyle`/`<style>` 注入内嵌样式）。
 - 对话切换检测：`popstate` + Navigation API `navigate` 事件 + 1s URL 轮询三重保险。
 - "当前位置"保存**元素引用**而非下标，虚拟化列表插入/移除节点不会导致索引错位。
+- **Hydration 安全闸门（重要）**：chatgpt.com 是 Remix 式整文档 hydration（`hydrateRoot(document, ...)`）。在水合窗口内向 document 注入任何节点都会触发 React #418/#423 崩溃并使整页客户端重渲染。因此所有 DOM 写入（浮动控件、toast、高亮、userscript 的样式注入）都排队等待闸门打开：DOM 静默 ≥700ms 且（检测到 React fiber 标记或已过 4s），上限 8s。副作用是页面加载后浮动控件约 1–4s 才出现、此期间快捷键会排队执行——这是刻意为之的正确性取舍。若我们的节点仍被 React 重渲染擦掉，MutationObserver 会自动重建。
 
 ## 排查："没识别到提示词"怎么办
 
@@ -98,4 +99,5 @@ background.js          service worker：commands 转发 + 补注入 + 汇报已�
 chatgpt-jump.user.js   ★ 唯一逻辑文件：扩展 content script 兼 userscript
 content.css            样式（扩展路径专用，与文件内嵌 CJP_CSS 保持同步）
 icons/                 16/48/128 PNG 图标
+test/                  测试（jsdom 单测 + 真 Chrome E2E + hydration 复现），与扩展无关
 ```

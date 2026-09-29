@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ChatGPT Jump to Prompt",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Quickly jump back to your own prompts in long ChatGPT conversations. Alt+J = last prompt, Alt+Up/Alt+Down = navigate between prompts.",
   "permissions": ["scripting"],
   "host_permissions": [

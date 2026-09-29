@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT Jump to Prompt
 // @namespace    https://github.com/liqiangcc/chatgpt-jump-to-prompt
-// @version      1.1.0
+// @version      1.1.1
 // @description  在 ChatGPT 长对话中快速跳回自己提问的位置：Alt+J 最后一条，Alt+↑/↓ 逐条导航；右侧浮动按钮支持触屏。
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -191,6 +191,76 @@
   let hlTimer = 0;
   let moTimer = 0;
   let retryTimer = 0;
+
+  /* ================================================================== */
+  /*  DOM-write gate                                                     */
+  /*                                                                     */
+  /*  chatgpt.com hydrates the ENTIRE document (Remix-style              */
+  /*  hydrateRoot(document, ...)). Any node we inject while hydration    */
+  /*  is still running becomes a hydration mismatch -> React error       */
+  /*  #418/#423 and a full client re-render that also wipes our UI.      */
+  /*                                                                     */
+  /*  So no DOM writes until the page has gone quiet:                    */
+  /*    - DOM must see no host mutations for QUIET_MS (covers streaming  */
+  /*      SSR / progressive hydration, which churn the document), AND    */
+  /*    - React fiber markers must already be present (hydration ran)    */
+  /*      OR MIN_WAIT_MS must have elapsed (non-React / SSR-less page).  */
+  /*    MAX_WAIT_MS is the hard cap so the UI can never be blocked       */
+  /*    forever on a pathological page.                                  */
+  /* ================================================================== */
+
+  let domSafe = false;
+  const domWriteQueue = [];
+
+  function whenDomSafe(fn) {
+    if (domSafe) fn();
+    else domWriteQueue.push(fn);
+  }
+
+  function isOurNode(n) {
+    return n.nodeType === 1 && (
+      (n.getAttribute && n.getAttribute('data-cjp') !== null) ||
+      (n.classList && Array.prototype.some.call(n.classList, (c) => c.indexOf('cjp') === 0)));
+  }
+
+  function reactHydrated() {
+    // React stamps an internal __react* expando on every DOM element it has
+    // claimed; presence on the document root/body means hydration has run.
+    for (const o of [document, document.documentElement, document.body]) {
+      if (!o) continue;
+      const keys = Object.keys(o);
+      for (const k of keys) if (k.indexOf('__react') === 0) return true;
+    }
+    return false;
+  }
+
+  (function armDomGate() {
+    const QUIET_MS = 700;
+    const MIN_WAIT_MS = 4000; // covers hydrations that start late
+    const MAX_WAIT_MS = 8000;
+    const t0 = Date.now();
+    let quietTimer = 0;
+
+    const open = () => {
+      gateObs.disconnect();
+      domSafe = true;
+      while (domWriteQueue.length) domWriteQueue.shift()();
+    };
+    const probe = () => {
+      if (Date.now() - t0 >= MIN_WAIT_MS || reactHydrated()) open();
+      else quietTimer = setTimeout(probe, 300);
+    };
+    const bump = () => { clearTimeout(quietTimer); quietTimer = setTimeout(probe, QUIET_MS); };
+
+    const gateObs = new MutationObserver((muts) => {
+      for (const m of muts)
+        for (const n of m.addedNodes)
+          if (!isOurNode(n)) return bump();
+    });
+    gateObs.observe(document.documentElement, { childList: true, subtree: true });
+    bump();
+    setTimeout(open, MAX_WAIT_MS); // never block the UI forever
+  })();
 
   /* ================================================================== */
   /*  Styles (userscript runtimes only — the extension uses content.css)   */
@@ -465,10 +535,17 @@
   setInterval(checkNavigation, 1000);
 
   // Streaming replies and virtualised scrolling mutate the DOM constantly —
-  // debounce a recount so the badge stays accurate without churning.
+  // debounce a recount so the badge stays accurate without churning. This
+  // also self-heals: if a React client re-render wiped our nodes (e.g. after
+  // a hydration failure), rebuild them once the DOM is safe.
   const mo = new MutationObserver(() => {
     clearTimeout(moTimer);
-    moTimer = setTimeout(() => { checkNavigation(); updateBadge(); }, OBSERVER_DEBOUNCE_MS);
+    moTimer = setTimeout(() => {
+      checkNavigation();
+      if (badgeEl && !badgeEl.isConnected) { badgeEl = badgeLabel = null; }
+      if (domSafe && !badgeHidden) ensureBadge();
+      updateBadge();
+    }, OBSERVER_DEBOUNCE_MS);
   });
   mo.observe(document.documentElement, { childList: true, subtree: true });
 
@@ -477,12 +554,16 @@
   /* ================================================================== */
 
   function dispatch(command) {
-    // No dedup needed: when a command IS bound the browser consumes the
-    // keystroke before the page sees it, so the message path and the keydown
-    // path can never fire for the same press.
-    if (command === 'jump-to-last-prompt') jumpLast();
-    else if (command === 'jump-to-prev-prompt') step(-1);
-    else if (command === 'jump-to-next-prompt') step(1);
+    // Queue behind the DOM gate: jumping during hydration would write
+    // class/style attrs mid-flight (same #418 risk) AND read a half-built
+    // message list. No dedup needed — when a command IS bound the browser
+    // consumes the keystroke before the page sees it, so the message path
+    // and the keydown path can never fire for the same press.
+    whenDomSafe(() => {
+      if (command === 'jump-to-last-prompt') jumpLast();
+      else if (command === 'jump-to-prev-prompt') step(-1);
+      else if (command === 'jump-to-next-prompt') step(1);
+    });
   }
 
   // Extension path: commands arrive from background.js.
@@ -528,7 +609,10 @@
   /*  Init                                                               */
   /* ================================================================== */
 
-  if (!IS_EXTENSION) injectStyles();
-  ensureBadge();
-  updateBadge();
+  // UI mounts only once the DOM is safe to write (see armDomGate).
+  whenDomSafe(() => {
+    if (!IS_EXTENSION) injectStyles();
+    ensureBadge();
+    updateBadge();
+  });
 })();
