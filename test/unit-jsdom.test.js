@@ -111,6 +111,34 @@ const NORMAL = `
     check('queued jump executed after gate', arts[2].__scrolled === 1);
   }
 
+  console.log('== virtualised history: older turns mount above current position ==');
+  {
+    const w = makeDom(NORMAL);
+    await sleep(900);
+    press(w, 'KeyJ'); await sleep(150); // at Q2 (index 1 of 2)
+    const badge = w.document.querySelector('.cjp-badge');
+    check('badge 第 2/2 条 before history load', badge.textContent.includes('第 2/2 条'));
+
+    // Simulate scrolling up: two older turns mount above (history virtualisation)
+    const main = w.document.querySelector('main');
+    const holder = w.document.createElement('div');
+    holder.innerHTML = `
+      <article data-turn="user"><div data-message-author-role="user"><div class="whitespace-pre-wrap">Q0</div></div></article>
+      <article data-turn="assistant"><div data-message-author-role="assistant"><div class="markdown">A0</div></div></article>`;
+    main.prepend(holder.children[1]); main.prepend(holder.children[0]);
+    await sleep(700); // observer debounce recount
+
+    // 3 user prompts total now; currentEl still points at Q2 -> index 1→2
+    check('badge recounts to 第 3/3 条 (element-ref survives prepend)', badge.textContent.includes('第 3/3 条'));
+    press(w, 'ArrowUp'); await sleep(150);
+    let hl = w.document.querySelector('.cjp-highlight');
+    check('prev lands on Q1', hl && /Q1/.test(hl.textContent));
+    press(w, 'ArrowUp'); await sleep(150);
+    hl = w.document.querySelector('.cjp-highlight');
+    check('prev reaches newly-mounted historical Q0', hl && /Q0/.test(hl.textContent));
+    check('badge 第 1/3 条', badge.textContent.includes('第 1/3 条'));
+  }
+
   console.log('== empty conversation -> composer fallback ==');
   {
     const w = makeDom(`<main></main><div id="prompt-textarea" contenteditable="true"></div>`);
